@@ -239,6 +239,67 @@ class OfficeProjectAccessServiceTest {
         assertDoesNotThrow(() -> access.requireLeader("P1"));
     }
 
+    /** 逐项权限的授权/拒绝双向矩阵；MARGIN_READ 与 EXPORT_QUOTE 由 encode 隐含 QUOTE_READ，反向不成立。 */
+    @Test void everyProjectPermissionIsCheckedFromMemberFlags() {
+        addProject("P1", null);
+        enforcementOn("USR-1");
+        addMember("P1", "USR-1", "COLLABORATOR");
+        var member = members.getFirst();
+
+        member.setPermissionFlags(0);
+        assertThrows(AccessDeniedException.class, () -> access.requireMember("P1"));
+
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(OfficeProjectPermission.READ)));
+        assertDoesNotThrow(() -> access.requireMember("P1"));
+        for (OfficeProjectPermission permission : List.of(OfficeProjectPermission.EDIT,
+                OfficeProjectPermission.QUOTE_READ, OfficeProjectPermission.MARGIN_READ,
+                OfficeProjectPermission.EXPORT_PROJECT, OfficeProjectPermission.EXPORT_QUOTE)) {
+            assertThrows(AccessDeniedException.class, () -> access.requirePermission("P1", permission),
+                "仅 READ 不应放行 " + permission);
+        }
+        assertThrows(AccessDeniedException.class, () -> access.requireLeader("P1"));
+
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(
+            OfficeProjectPermission.READ, OfficeProjectPermission.EDIT)));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.EDIT));
+        assertThrows(AccessDeniedException.class, () -> access.requirePermission("P1", OfficeProjectPermission.QUOTE_READ));
+
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(
+            OfficeProjectPermission.READ, OfficeProjectPermission.QUOTE_READ)));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.QUOTE_READ));
+        assertThrows(AccessDeniedException.class, () -> access.requirePermission("P1", OfficeProjectPermission.MARGIN_READ));
+        assertThrows(AccessDeniedException.class, () -> access.requirePermission("P1", OfficeProjectPermission.EXPORT_QUOTE));
+
+        // 前端级联勾选与 encode 校验保证 MARGIN_READ / EXPORT_QUOTE 必带 READ 与 QUOTE_READ 位。
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(
+            OfficeProjectPermission.READ, OfficeProjectPermission.QUOTE_READ, OfficeProjectPermission.MARGIN_READ)));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.MARGIN_READ));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.QUOTE_READ));
+
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(
+            OfficeProjectPermission.READ, OfficeProjectPermission.QUOTE_READ, OfficeProjectPermission.EXPORT_QUOTE)));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.EXPORT_QUOTE));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.QUOTE_READ));
+        assertThrows(AccessDeniedException.class, () -> access.requirePermission("P1", OfficeProjectPermission.MARGIN_READ));
+
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(
+            OfficeProjectPermission.READ, OfficeProjectPermission.EXPORT_PROJECT)));
+        assertDoesNotThrow(() -> access.requirePermission("P1", OfficeProjectPermission.EXPORT_PROJECT));
+
+        member.setPermissionFlags(OfficeProjectPermission.encode(List.of(
+            OfficeProjectPermission.READ, OfficeProjectPermission.MANAGE_MEMBERS)));
+        assertDoesNotThrow(() -> access.requireLeader("P1"));
+    }
+
+    @Test void dealerOwnerHoldsEveryPermissionWithoutMembership() {
+        addWorkspace("W1", "USR-D1");
+        addProject("P1", "W1");
+        enforcementOn("USR-D1", "W1");
+        for (OfficeProjectPermission permission : OfficeProjectPermission.values()) {
+            assertTrue(access.can("P1", permission), "工作区主号应持有 " + permission);
+        }
+    }
+
     @Test void dealerOwnerAccessesAndManagesWorkspaceProjectsWithoutMembership() {
         addWorkspace("W1", "USR-D1");
         addProject("P1", "W1");

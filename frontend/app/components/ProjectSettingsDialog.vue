@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { authEnabled } from '~/composables/useAuth'
 import type { AssignableUser, ProjectPermission, ProjectReferenceImage } from '~/types/workspace'
-import { projectPermissionsFor } from '~/utils/projectPermissions'
+import { projectPermissionsFor, toggleProjectPermission } from '~/utils/projectPermissions'
 
 const emit = defineEmits<{ close: [] }>()
 const workspace = useWorkspaceStore()
@@ -45,21 +45,7 @@ onMounted(async () => {
 })
 
 function togglePermission(userId: string, permission: ProjectPermission, checked: boolean) {
-  const flags = new Set(grants[userId] || [])
-  if (checked) {
-    flags.add('READ')
-    flags.add(permission)
-    if (permission === 'MARGIN_READ' || permission === 'EXPORT_QUOTE') flags.add('QUOTE_READ')
-  } else if (permission === 'READ') {
-    flags.clear()
-  } else {
-    flags.delete(permission)
-    if (permission === 'QUOTE_READ') {
-      flags.delete('MARGIN_READ')
-      flags.delete('EXPORT_QUOTE')
-    }
-  }
-  grants[userId] = [...flags]
+  grants[userId] = toggleProjectPermission(grants[userId] || [], permission, checked)
 }
 
 async function save() {

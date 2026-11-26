@@ -506,6 +506,118 @@ class OfficeProjectServiceTest {
         assertTrue(auditLogs.get(0).getDetail().contains("LEADER:USR-3"));
     }
 
+    @Test void replaceMembersEncodesAndPersistsPermissionGrants() {
+        activeUser("USR-1", "leader");
+        activeUser("USR-2", "collab");
+        var request = request("项目", List.of("一层"));
+        request.setLeaderUserId("USR-1");
+        request.setCollaboratorUserIds(List.of("USR-2"));
+        var created = service.createProject(request);
+        when(access.ownsProject(created.getProjectId())).thenReturn(true);
+
+        var update = new UpdateProjectMembersRequest();
+        update.setLeaderUserId("USR-1");
+        update.setCollaboratorUserIds(List.of("USR-2"));
+        update.setPermissions(Map.of(
+            "USR-1", List.of(OfficeProjectPermission.READ, OfficeProjectPermission.EDIT,
+                OfficeProjectPermission.MANAGE_MEMBERS),
+            "USR-2", List.of(OfficeProjectPermission.READ, OfficeProjectPermission.QUOTE_READ,
+                OfficeProjectPermission.MARGIN_READ)));
+        var updated = service.replaceMembers(created.getProjectId(), update);
+
+        // 写入成员表的位掩码与 encode 结果一致（等价于落库字段值）
+        var leader = members.stream().filter(member -> "USR-1".equals(member.getUserId())).findFirst().orElseThrow();
+        var collaborator = members.stream().filter(member -> "USR-2".equals(member.getUserId())).findFirst().orElseThrow();
+        assertEquals(OfficeProjectPermission.encode(List.of(OfficeProjectPermission.READ,
+            OfficeProjectPermission.EDIT, OfficeProjectPermission.MANAGE_MEMBERS)), leader.getPermissionFlags().intValue());
+        assertEquals(OfficeProjectPermission.encode(List.of(OfficeProjectPermission.READ,
+            OfficeProjectPermission.QUOTE_READ, OfficeProjectPermission.MARGIN_READ)), collaborator.getPermissionFlags().intValue());
+
+        // 返回 DTO 的解码结果与授权一致（写入 → 读回往返）
+        assertEquals(List.of(OfficeProjectPermission.READ, OfficeProjectPermission.EDIT,
+            OfficeProjectPermission.MANAGE_MEMBERS), updated.getLeader().getPermissions());
+        assertEquals(List.of(OfficeProjectPermission.READ, OfficeProjectPermission.QUOTE_READ,
+            OfficeProjectPermission.MARGIN_READ), updated.getCollaborators().getFirst().getPermissions());
+
+        // 同事务先删后写
+        var order = inOrder(memberMapper);
+        order.verify(memberMapper).delete(any());
+        order.verify(memberMapper, times(2)).insert(any(OfficeProjectMember.class));
+    }
+
+    @Test void replaceMembersRejectsGrantsAndLeaderChangeFromNonOwner() {
+        activeUser("USR-1", "leader");
+        activeUser("USR-2", "collab");
+        activeUser("USR-3", "newleader");
+        var request = request("项目", List.of("一层"));
+        request.setLeaderUserId("USR-1");
+        request.setCollaboratorUserIds(List.of("USR-2"));
+        var created = service.createProject(request);
+        // ownsProject 默认 false：有成员管理权限的非主号成员
+
+        var withGrants = new UpdateProjectMembersRequest();
+        withGrants.setLeaderUserId("USR-1");
+        withGrants.setCollaboratorUserIds(List.of("USR-2"));
+        withGrants.setPermissions(Map.of("USR-2", List.of(OfficeProjectPermission.READ)));
+        assertEquals("只有工作区主号可以授权或更换负责人", assertThrows(
+            com.rsdp.officeproduct.importer.common.AccessDeniedException.class,
+            () -> service.replaceMembers(created.getProjectId(), withGrants)).getMessage());
+
+        var leaderChange = new UpdateProjectMembersRequest();
+        leaderChange.setLeaderUserId("USR-3");
+        leaderChange.setCollaboratorUserIds(List.of("USR-2"));
+        assertEquals("只有工作区主号可以授权或更换负责人", assertThrows(
+            com.rsdp.officeproduct.importer.common.AccessDeniedException.class,
+            () -> service.replaceMembers(created.getProjectId(), leaderChange)).getMessage());
+
+        assertEquals(2, members.size());
+        assertTrue(members.stream().allMatch(member -> member.getPermissionFlags() == 0));
+        assertTrue(auditLogs.isEmpty());
+    }
+
+    @Test void replaceMembersRejectsGrantsForUsersOutsideMemberSet() {
+        activeUser("USR-1", "leader");
+        activeUser("USR-2", "collab");
+        var request = request("项目", List.of("一层"));
+        request.setLeaderUserId("USR-1");
+        request.setCollaboratorUserIds(List.of("USR-2"));
+        var created = service.createProject(request);
+        when(access.ownsProject(created.getProjectId())).thenReturn(true);
+
+        var update = new UpdateProjectMembersRequest();
+        update.setLeaderUserId("USR-1");
+        update.setCollaboratorUserIds(List.of("USR-2"));
+        update.setPermissions(Map.of("USR-9", List.of(OfficeProjectPermission.READ)));
+        assertEquals("授权对象必须是本项目成员", assertThrows(BusinessException.class,
+            () -> service.replaceMembers(created.getProjectId(), update)).getMessage());
+    }
+
+    @Test void replaceMembersKeepsExistingGrantsWhenPermissionsOmitted() {
+        activeUser("USR-1", "leader");
+        activeUser("USR-2", "collab");
+        var request = request("项目", List.of("一层"));
+        request.setLeaderUserId("USR-1");
+        request.setCollaboratorUserIds(List.of("USR-2"));
+        var created = service.createProject(request);
+        when(access.ownsProject(created.getProjectId())).thenReturn(true);
+
+        var grant = new UpdateProjectMembersRequest();
+        grant.setLeaderUserId("USR-1");
+        grant.setCollaboratorUserIds(List.of("USR-2"));
+        grant.setPermissions(Map.of("USR-2", List.of(OfficeProjectPermission.READ, OfficeProjectPermission.EDIT)));
+        service.replaceMembers(created.getProjectId(), grant);
+
+        var keep = new UpdateProjectMembersRequest();
+        keep.setLeaderUserId("USR-1");
+        keep.setCollaboratorUserIds(List.of("USR-2"));
+        service.replaceMembers(created.getProjectId(), keep);
+
+        var collaborator = members.stream().filter(member -> "USR-2".equals(member.getUserId())).findFirst().orElseThrow();
+        assertEquals(OfficeProjectPermission.encode(List.of(OfficeProjectPermission.READ,
+            OfficeProjectPermission.EDIT)), collaborator.getPermissionFlags().intValue());
+        verify(access, times(2)).requireLeader(created.getProjectId());
+    }
+
     @Test void createProjectRequiresWorkspaceAndValidatesMemberWorkspaceWhenEnforced() {
         when(access.workspaceForProjectCreation()).thenReturn("W1");
         var request = request("项目", List.of("一层"));

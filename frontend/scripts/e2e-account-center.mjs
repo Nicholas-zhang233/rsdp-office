@@ -62,6 +62,17 @@ async function openAs(user) {
       return respond({ workspaceEnabled: true, dealer: true, effectiveVisible: true })
     }
     if (path === '/api/v1/products/page') return respond({ rows: [], total: 0, catalogTotal: 0, activeTotal: 0 })
+    if (path === '/api/v1/products/browse') {
+      return respond({ rows: [], total: 0, catalogTotal: 0, activeTotal: 0, localTotal: 0, canManageLocal: false, sharedUnavailable: false })
+    }
+    if (path === '/api/v1/products/browse/facets') {
+      return respond({ localCategories: [], sharedCategories: [], colors: [], sharedUnavailable: false })
+    }
+    if (path === '/api/v1/office/projects/PROJ-1/quotation/preview') {
+      return respond({ projectId: 'PROJ-1', projectName: '报价测试项目', pricingMode: 'COEFFICIENT', pricingValue: 1.2,
+        generatedAt: '2026-11-26T10:00:00', floors: [],
+        totals: { lineCount: 0, missingFactoryPriceLines: 0, factoryTotal: 0, dealTotal: 0 } })
+    }
     if (path === '/api/v1/office/favorites/product-ids') {
       reads.favoriteProductIds += 1
       return respond([])

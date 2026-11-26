@@ -40,6 +40,7 @@ public class OfficeController {
 
     @PostMapping("/projects/{projectId}/module-recommendations")
     public Result<ModuleRecommendationDto> recommendModules(@PathVariable String projectId, @RequestBody ModuleRecommendationRequest request) {
+        projectAccess.requireFloorAccess(projectId);
         return Result.ok(moduleRecommendations.recommend(projectId, request));
     }
 

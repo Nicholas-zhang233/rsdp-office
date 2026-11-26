@@ -35,8 +35,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -265,6 +267,94 @@ class ProjectQuotationServiceTest {
         assertEquals(2, draft.getFees().size());
         verify(quotationMapper, never()).insert(any(OfficeQuotation.class));
         verifyNoInteractions(auditService);
+    }
+
+    @Test
+    void latestRequiresQuoteReadAndKeepsMarginFieldsWithGrant() {
+        stubConfirmedQuotation();
+        when(accessService.can(PROJECT_ID, OfficeProjectPermission.MARGIN_READ)).thenReturn(true);
+        ProjectQuotationService service = service();
+
+        ProjectQuotationRecordDto record = service.latest(PROJECT_ID);
+
+        verify(accessService).requirePermission(PROJECT_ID, OfficeProjectPermission.QUOTE_READ);
+        assertEquals("COEFFICIENT", record.getPricingMode());
+        assertAmount("1.25", record.getPricingValue());
+        assertAmount("194", record.getLines().getFirst().getFactoryPrice());
+        assertEquals(0, record.getMissingPriceLines());
+    }
+
+    @Test
+    void latestRejectsWithoutQuoteReadBeforeReadingData() {
+        stubConfirmedQuotation();
+        doThrow(new com.rsdp.officeproduct.importer.common.AccessDeniedException("无权执行该项目操作"))
+            .when(accessService).requirePermission(PROJECT_ID, OfficeProjectPermission.QUOTE_READ);
+
+        assertThrows(com.rsdp.officeproduct.importer.common.AccessDeniedException.class,
+            () -> service().latest(PROJECT_ID));
+        verify(quotationMapper, never()).selectOne(any());
+    }
+
+    @Test
+    void latestMasksMarginFieldsWithoutMarginReadGrant() {
+        stubConfirmedQuotation();
+        when(accessService.can(PROJECT_ID, OfficeProjectPermission.MARGIN_READ)).thenReturn(false);
+
+        ProjectQuotationRecordDto record = service().latest(PROJECT_ID);
+
+        assertNull(record.getPricingMode());
+        assertNull(record.getPricingValue());
+        assertNull(record.getMissingPriceLines());
+        assertNull(record.getLines().getFirst().getFactoryPrice());
+        assertNull(record.getLines().getFirst().getIssue());
+        // 销售价与总价不属于毛利字段，保留可见
+        assertAmount("300", record.getLines().getFirst().getUnitPrice());
+        assertAmount("600", record.getTotalAmount());
+    }
+
+    @Test
+    void latestForExportRequiresExportQuoteAndExistingConfirmedRecord() {
+        stubConfirmedQuotation();
+        ProjectQuotationService service = service();
+
+        doThrow(new com.rsdp.officeproduct.importer.common.AccessDeniedException("无权执行该项目操作"))
+            .when(accessService).requirePermission(PROJECT_ID, OfficeProjectPermission.EXPORT_QUOTE);
+        assertThrows(com.rsdp.officeproduct.importer.common.AccessDeniedException.class,
+            () -> service.latestForExport(PROJECT_ID));
+
+        reset(accessService);
+        when(quotationMapper.selectOne(any())).thenReturn(null);
+        assertEquals("项目暂无已确认报价", assertThrows(BusinessException.class,
+            () -> service.latestForExport(PROJECT_ID)).getMessage());
+    }
+
+    /** 一条已确认报价：2 张办公桌，含出厂价，无费用明细。 */
+    private OfficeQuotation stubConfirmedQuotation() {
+        OfficeQuotation quotation = new OfficeQuotation();
+        quotation.setQuotationId("QT-1");
+        quotation.setProjectId(PROJECT_ID);
+        quotation.setProjectName("报价测试项目");
+        quotation.setRevision(1);
+        quotation.setStatus("CONFIRMED");
+        quotation.setPricingMode("COEFFICIENT");
+        quotation.setPricingValue(new BigDecimal("1.25"));
+        quotation.setTotalAmount(new BigDecimal("600"));
+        quotation.setFeesJson("[]");
+        quotation.setCreatedBy("DEALER-1");
+        when(quotationMapper.selectOne(any())).thenReturn(quotation);
+
+        OfficeQuotationLine row = new OfficeQuotationLine();
+        row.setQuotationId("QT-1");
+        row.setFloorId(FLOOR_ID);
+        row.setZoneId("Z1");
+        row.setProductId("V-DESK");
+        row.setRspuId("RSPU-DESK");
+        row.setProductName("办公桌");
+        row.setQty(2);
+        row.setFactoryPrice(new BigDecimal("194"));
+        row.setUnitPrice(new BigDecimal("300"));
+        when(quotationLineMapper.findByQuotationId("QT-1")).thenReturn(List.of(row));
+        return quotation;
     }
 
     private ConfirmProjectQuotationRequest request(String mode, String value, String serviceFee, String logisticsFee,
